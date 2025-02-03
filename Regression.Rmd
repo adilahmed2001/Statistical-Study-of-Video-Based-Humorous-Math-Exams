@@ -1,0 +1,1517 @@
+---
+title: "Project Milestone 2 Report | TEAM 23"
+author: |
+        Sai Kiran Peruru (UH ID : 2288947) |
+        Mohammed Adil Ahmed (UH ID : 2304590)
+date: "`r Sys.Date()`"
+output: pdf_document
+toc: true
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(
+	echo = FALSE,
+	message = FALSE,
+	warning = FALSE
+)
+```
+
+```{r include=FALSE}
+# Load required libraries
+library(tidyverse)
+library(lubridate)
+library(ggplot2)
+library(cowplot)
+library(ggpubr)
+library(readr)
+library(gridExtra)
+library(dplyr)
+library(tidyr)
+library(knitr)
+library(MASS)
+library(car)
+require(car)
+library(lme4)
+library(lmerTest)
+library(lattice)
+library(sjPlot)
+library(Matrix)
+library(arm)
+library(glmmTMB)
+library(ggcorrplot)
+library(jtools)
+library(ggeffects)
+library(kableExtra)
+library(AICcmodavg)
+```
+
+```{r include=FALSE}
+
+rm(list = ls())
+dir <- dirname(rstudioapi::getSourceEditorContext()$path)
+setwd(dir)
+getwd()
+
+```
+
+\newpage
+
+# Data Processing
+
+```{r message=FALSE, warning=FALSE, include=FALSE}
+
+# Read the data frames
+
+Df = read.csv("Affective-Math-Dataset_3.csv", stringsAsFactors = T)
+str(Df)
+
+```
+
+## Checking Perspiration Data
+
+### QQPlot analysis of Perspiration Data
+
+```{r echo=FALSE, fig.height=5, fig.width=13, message=FALSE, warning=FALSE}
+
+qqplot <- ggplot(Df, aes(sample = Perspiration)) +
+  stat_qq() +
+  stat_qq_line() +
+  labs(title = "Q-Q Plot of Perspiration",
+       x = "Theoretical Quantiles", y = "Sample Quantiles") +
+  theme_minimal()
+
+qqplot
+
+```
+
+### BoxPlot analysis of Perspiration Data
+
+```{r echo=FALSE, fig.height=5, fig.width=13, message=FALSE, warning=FALSE}
+
+boxplot <- ggplot(Df, aes(x = as.factor(ParticipantID), y = Perspiration)) +
+  geom_boxplot(fill = "skyblue", color = "black") +
+  labs(title = "Perspiration Across Participants",
+       x = "Participant ID", y = "Perspiration") +
+  theme_minimal()
+
+
+boxplot
+
+```
+The QQ plot shows the quantiles of the perinasal perspiration data against the expected quantiles of a normal distribution. The S-shaped curve in the plot suggests that the distribution of perspiration is not normal. The lower and upper tails of the data curve away significantly from the line that represents a normal distribution. This indicates heavy tails higher frequencies of extremely low and high values which is typical for data that are not symmetrical and may contain outliers.
+
+From Boxplot we can say most participants show low variability in their perspiration levels, as indicated by the tightly packed boxes. However, certain participants exhibit higher median perspiration levels and a broader range of values, as indicated by the larger boxes and whiskers. Partcipant S022 showed a huge variation indicating there is some abnormality in data. So S022 is removed and further investigated, which yielded a better results.
+
+\newpage
+
+## Baseline Data Processing
+
+```{r echo=FALSE, message=FALSE, warning=FALSE}
+
+# BL Data
+Df <- Df[Df$ParticipantID != "S022", ]
+Df_BL <- Df[Df$Session == "BL", ]
+
+# Remove unnecessary columns
+Df_BL.SubSet <- subset(Df_BL, select = c(ParticipantID, Perspiration, HR.E4, HR.AW, HRV.IBI,Breathing, Time))
+# Adding pp_log column to the data
+Df_BL.SubSet["pp_log"] <- log(Df_BL.SubSet$Perspiration)
+
+
+# Sync E4 and AW HRs to have perfect E4
+# initialize the e4 perfect
+Df_BL.SubSet$HR.E4_perfect <- Df_BL.SubSet$HR.E4
+# Add NAs to perfect where the AW has NAs
+Df_BL.SubSet[is.na(Df_BL.SubSet$HR.AW), ]$HR.E4_perfect <- NA
+
+str(Df_BL.SubSet)
+
+```
+
+Baseline data processing involves using baseline measurements as a reference point to assess changes or effects during an experimental condition. Subtracting baseline values from during-exam values normalizes the data, allowing for a clearer understanding of the physiological impact of the exam itself, independent of individual baseline differences. By subtracting baseline data, you can enhance the sensitivity of your analysis to detect changes due to the exam. 
+
+## Exam data Processing
+
+```{r include=FALSE}
+# Exam data
+Df_Exam <- Df[Df$Session == "Exam", ]
+
+# Remove unnecessary columns
+Df_Exam.SubSet <- subset(Df_Exam, select = -c(Session, Timestamp, Final.Thoughts, Calculator))
+
+```
+
+```{r include=FALSE}
+
+# Fill the NAs with previous values.
+Df_Exam.SubSet <- Df_Exam.SubSet %>% fill(Question.Type)
+Df_Exam.SubSet <- Df_Exam.SubSet %>% fill(Question.Name)
+Df_Exam.SubSet <- Df_Exam.SubSet %>% fill(Accuracy.Score)
+Df_Exam.SubSet <- Df_Exam.SubSet %>% fill(Attempt)
+
+# Remove Examples
+Df_Exam.SubSet <- Df_Exam.SubSet[!Df_Exam.SubSet$Question.Type == "Example", ]
+
+# Remove 2nd and 3rd attempts
+# Means that take the all first attempts
+Df_Exam.SubSet <- Df_Exam.SubSet[Df_Exam.SubSet$Attempt == 1, ]
+
+# Adding pp_log column to the data
+Df_Exam.SubSet["pp_log"] <- log(Df_Exam.SubSet$Perspiration)
+
+Df_Exam.SubSet["HR.E4_perfect"] <- Df_Exam.SubSet$HR.E4
+# Add NAs to perfect where the AW has NAs
+Df_Exam.SubSet[is.na(Df_Exam.SubSet$HR.AW), ]$HR.E4_perfect <- NA
+
+# Update the index after sync
+rownames(Df_Exam.SubSet) <- 1:nrow(Df_Exam.SubSet)
+
+#unique(Df_Exam.SubSet$Question.Type)
+#names(Df_Exam.SubSet)
+Df_Exam.SubSet.beforeCook <- Df_Exam.SubSet
+
+```
+
+
+```{r include=FALSE}
+# Removing Outliers at Signal Level
+signal.lm.HRs <- lm(HR.E4_perfect ~ HR.AW, data = Df_Exam.SubSet)
+# Remove outlier with 95%
+cooksD <- cooks.distance(signal.lm.HRs)
+cooksD.95 <- quantile(cooksD, prob = c(.95))
+
+influential <- cooksD[(cooksD > cooksD.95)]
+
+names_of_influential <- names(influential)
+# influential
+df_outlier <- Df_Exam.SubSet[names_of_influential, ]
+
+# Remove outliers
+Df_Exam.SubSet <- Df_Exam.SubSet %>% anti_join(df_outlier)
+
+# Update the index after filters
+rownames(Df_Exam.SubSet) <- 1:nrow(Df_Exam.SubSet)
+
+
+```
+
+
+```{r include=FALSE}
+
+# Baseline Means
+Df_BL.SubSet2 <- Df_BL.SubSet %>%
+  group_by(ParticipantID) %>%
+  summarise(
+    PPMean = mean(Perspiration, na.rm = T),
+    PPlogMean = mean(pp_log, na.rm = T),
+    HRE4Mean = mean(HR.E4, na.rm = T),
+    HRE4PerfMean = mean(HR.E4_perfect, na.rm = T),
+    HRAWMean = mean(HR.AW, na.rm = T),
+    HRVIBIMean = mean(HRV.IBI, na.rm = T)
+  )
+
+Df_Exam.SubSet2 <- Df_Exam.SubSet %>%
+  group_by(ParticipantID, Question.Name, Question.Type) %>%
+  summarise(
+    QOrder = first(Question.Order),
+    QNumber = first(Question.Number),
+    ExamVersion = first(ExamVersion),
+    Gender = first(Gender),
+    QSolTime = n(),
+    Accuracy.Score = first(Accuracy.Score),
+    PPMean = mean(Perspiration, na.rm = TRUE),
+    PPlogMean = mean(pp_log, na.rm = TRUE),
+    HRE4Mean = mean(HR.E4, na.rm = TRUE),
+    HRE4PerfMean = mean(HR.E4_perfect, na.rm = TRUE),
+    HRAWMean = mean(HR.AW, na.rm = TRUE),
+    HRVIBIMean = mean(HRV.IBI, na.rm = TRUE),
+    SAI = mean(SAI.Score, na.rm = TRUE),
+    .groups = 'drop'
+  )
+
+```
+
+```{r include=FALSE}
+
+# initialize new normalize columns
+
+Df_Exam.SubSet2$PPNorm <- NA
+Df_Exam.SubSet2$PPlogNorm <- NA
+Df_Exam.SubSet2$HRE4Norm <- NA
+Df_Exam.SubSet2$HRE4PerfNorm <- NA
+Df_Exam.SubSet2$HRAWNorm <- NA
+Df_Exam.SubSet2$HRVIBINorm <-NA
+
+
+for (p in unique(Df_Exam.SubSet$ParticipantID)) {
+  # PP Mean
+  tmpExam_pp_mean <- Df_Exam.SubSet2[Df_Exam.SubSet2$ParticipantID == p, ]$PPMean
+  tmpBL_pp_mean <- Df_BL.SubSet2[Df_BL.SubSet2$ParticipantID == p, ]$PPMean
+
+  # PP Log Mean
+  tmpExam_PP_Log_Mean <- Df_Exam.SubSet2[Df_Exam.SubSet2$ParticipantID == p, ]$PPlogMean
+  tmpBL_PP_Log_Mean <- Df_BL.SubSet2[Df_BL.SubSet2$ParticipantID == p, ]$PPlogMean
+
+  # HR.E4 Mean
+  tmpExam_HR.E4_Mean <- Df_Exam.SubSet2[Df_Exam.SubSet2$ParticipantID == p, ]$HRE4Mean
+  tmpBL_HR.E4_Mean <- Df_BL.SubSet2[Df_BL.SubSet2$ParticipantID == p, ]$HRE4Mean
+  
+  # HR.E4 Perfect Mean
+  tmpExam_HR.E4.Perfect_Mean <- Df_Exam.SubSet2[Df_Exam.SubSet2$ParticipantID == p, ]$HRE4PerfMean
+  tmpBL_HR.E4.Perfect_Mean <- Df_BL.SubSet2[Df_BL.SubSet2$ParticipantID == p, ]$HRE4PerfMean
+
+
+  # HR.AW Mean
+  tmpExam_HR.AW_Mean <- Df_Exam.SubSet2[Df_Exam.SubSet2$ParticipantID == p, ]$HRAWMean
+  tmpBL_HR.AW_Mean <- Df_BL.SubSet2[Df_BL.SubSet2$ParticipantID == p, ]$HRAWMean
+  
+  #HRV.IBI Mean
+  tmpExam_HRV.IBI_Mean <- Df_Exam.SubSet2[Df_Exam.SubSet2$ParticipantID == p, ]$HRVIBIMean
+  tmpBL_HRV.IBI_Mean <- Df_BL.SubSet2[Df_BL.SubSet2$ParticipantID == p, ]$HRVIBIMean
+
+  
+  Df_Exam.SubSet2[Df_Exam.SubSet2$ParticipantID == p, ]$PPNorm <- tmpExam_pp_mean - tmpBL_pp_mean
+  Df_Exam.SubSet2[Df_Exam.SubSet2$ParticipantID == p, ]$PPlogNorm <- tmpExam_PP_Log_Mean - tmpBL_PP_Log_Mean
+  Df_Exam.SubSet2[Df_Exam.SubSet2$ParticipantID == p, ]$HRE4Norm <- tmpExam_HR.E4_Mean - tmpBL_HR.E4_Mean
+
+
+  Df_Exam.SubSet2[Df_Exam.SubSet2$ParticipantID == p, ]$HRE4PerfNorm <- tmpExam_HR.E4.Perfect_Mean - tmpBL_HR.E4.Perfect_Mean
+
+  Df_Exam.SubSet2[Df_Exam.SubSet2$ParticipantID == p, ]$HRAWNorm <- tmpExam_HR.AW_Mean - tmpBL_HR.AW_Mean
+
+  Df_Exam.SubSet2[Df_Exam.SubSet2$ParticipantID == p, ]$HRVIBINorm <- tmpExam_HRV.IBI_Mean - tmpBL_HRV.IBI_Mean
+   
+}
+
+
+```
+
+
+```{r message=FALSE, warning=FALSE, include=FALSE}
+
+
+names(Df_Exam.SubSet2)[names(Df_Exam.SubSet2) == "Question.Name"] <- "QName"
+names(Df_Exam.SubSet2)[names(Df_Exam.SubSet2) == "Question.Type"] <- "QType"
+
+
+droplevels(Df_Exam.SubSet2)
+
+levels(Df_Exam.SubSet2$QType)
+
+Df_Exam.SubSet2$QName <- factor(Df_Exam.SubSet2$QName)
+Df_Exam.SubSet2$QType <- factor(Df_Exam.SubSet2$QType)
+Df_Exam.SubSet2$QOrder <- factor(Df_Exam.SubSet2$QOrder)
+Df_Exam.SubSet2$QNumber <- factor(Df_Exam.SubSet2$QNumber)
+Df_Exam.SubSet2$ExamVersion <- factor(Df_Exam.SubSet2$ExamVersion)
+Df_Exam.SubSet2$Gender <- factor(Df_Exam.SubSet2$Gender)
+
+unique(Df_Exam.SubSet2$QType)
+
+Df_Exam.SubSet2$QType <- relevel(Df_Exam.SubSet2$QType, ref = "V")
+
+Df_Exam.SubSet2$ExamVersion <- relevel(Df_Exam.SubSet2$ExamVersion, ref = "VAW")
+Df_Exam.SubSet2$Gender <- relevel(Df_Exam.SubSet2$Gender, ref = "M")
+
+table(Df_Exam.SubSet2$Gender)
+
+```
+
+The Exam data processing helps in analyzing the physiological and performance responses of participants in an experimental math exam. The process that we followed here:
+
+- The initial steps involve selecting a subset of data relevant to the "Exam" session and removing unnecessary columns. This helps focus the analysis on data that directly pertains to the participants' performance during the exam.
+
+- Forward filling was done to address missing values in key variables such as `Question.Type`, `Question.Name`, and `Accuracy.Score`. This method assumes that missing entries can be reasonably replaced by the preceding non-missing value.
+
+- We have excluded data from initial Example problems and focused only on the first attempts of each question. This filtering ensures that the data reflects initial responses to the questions.
+
+- Log transformation is applied to the perspiration data to handle skewness and outliers, potentially stabilizing variance. 
+
+- we synchronize two heart rate measurements from different sensors (E4 and AW).  It prepares the HR.E4_perfect column by ensuring it only contains data points where both sensors have valid measurements. If the HR.AW column has a missing value in a certain row, the corresponding row in the HR.E4_perfect column is also set to NA, indicating that the measurement at that moment is not usable for analysis or comparison due to missing data from the other sensor.
+
+- Outliers are identified and removed using Cook's distance, a measure of influence that an individual data point has on a linear regression model. This step helps prevent disproportionately influential points from skewing the results, leading to more robust statistical analyses.
+
+- The data is normalized by subtracting baseline physiological measures from the exam measures. This normalization allows for comparisons across participants by accounting for individual differences in baseline physiological states.
+
+- The code aggregates physiological and performance measures at the level of participant and question type, then normalizes these measures against baseline values. This method provides a clear comparison of how different question types affect participants, isolating the effect of the exam from the baseline state.
+
+- Categorical variables such as `Question.Type`, `ExamVersion`, and `Gender` are re-leveled to prioritize certain categories in the subsequent analysis. This step can be particularly useful in regression models to set specific categories as reference levels, helping interpret the results relative to these baselines.
+
+Approach we followed for preparing and analyzing experimental data, ensures that the subsequent statistical analysis can provide reliable and insightful results about the effects of different types of exam questions on student stress and performance.
+
+### Structured data for final version of Exam data
+
+```{r echo=FALSE, warning=FALSE}
+
+Df_Exam.SubSet2 <- Df_Exam.SubSet2  %>% drop_na( ParticipantID, QName, QOrder, QNumber, PPMean, PPlogMean,PPNorm, HRE4Mean, HRE4PerfMean,HRE4Norm, HRAWMean,HRAWNorm, HRVIBIMean )
+
+str(Df_Exam.SubSet2)
+
+```
+
+\newpage
+
+## Collinearity Check for Quantitative and Categorical Predictors
+
+```{r fig.height=10, fig.width=10, echo=FALSE, warning=FALSE}
+
+
+Df_Exam2 <- subset(Df_Exam.SubSet2 ,select = -c(ParticipantID, QName, QOrder, QNumber, PPMean, PPlogMean,PPNorm, HRE4Mean, HRE4PerfMean,HRE4Norm, HRAWMean,HRAWNorm, HRVIBIMean)) %>% drop_na()
+
+
+model.matrix(~0+., data=Df_Exam2) %>% 
+  cor(use="pairwise.complete.obs") %>% 
+  ggcorrplot(show.diag=FALSE, type="lower", lab=TRUE)
+
+```
+
+The above correlation matrix provided visualizes the relationships between various quantitative and categorical predictors in exam dataset.
+
+- `QSolTime` and `Accuracy.Score` have a positive correlation of 0.616. This could imply that as the solution time increases, the accuracy of responses also tends to increase. `HRVIBNorm` and `SAl` exhibit a positive correlation of 0.182. This indicates a moderate tendency for these variables to increase together. This could be interpreted as a relationship where higher hrv (a possible indicator of physiological arousal or anxiety) are associated with higher scores on SAl. 
+
+- `ExamVersionAWW` and `ExamVersionWVA` show a strong negative correlation of -0.772. This suggests that as the value in one variable increases, the value in the other tends to decrease significantly.
+
+- `QTypeV` has a moderate negative correlation with `QTypeA` and `QTypeW` (both around -0.491). This indicates that these types of questions typically do not appear together or influence each other inversely in this context.
+   
+- `GenderF` has positive correlations with several variables like `QSolTime` (0.074), but also shows weak positive and negative correlations with others, implying varied interactions with different aspects of the dataset.
+
+- `ExamVersionWVA` with itself is 1, which is expected, but notably, it does not correlate with `GenderF`, `QSolTime`, and several other variables, showing zero or near-zero correlation coefficients.
+
+- GenderF seems relatively isolated in terms of its influence, as indicated by mostly low correlation values with other variables. This might suggest that gender, as represented in this dataset, does not play a significant role in the variations seen in other variables such as Accuracy.Score, ExamVersionAWW, or various question types. Thus we can ignore gender consideration in the model.
+
+- A  moderate negative correlation between QTypeV and SAI (-0.49), indicating that participants may have experienced lower anxiety with VIDEO questions compared to ABSTRACT questions. This finding could support the hypothesis that VIDEO questions, potentially being more engaging or relatable, might reduce exam-related anxiety.
+
+\newpage
+
+# Step 1 
+
+**Conduct generalized linear modeling using perinasal perspiration as the response variable. Justify your methodology and express your insights.**
+
+## Full Model 1 - Normalized PP_log with Participant centered Random Effect
+
+
+```{r echo=FALSE, message=FALSE, warning=FALSE, paged.print=FALSE}
+
+pp_multi_model <- lmer(PPlogNorm ~ (1 | ParticipantID) + SAI + QType + QSolTime + Accuracy.Score, data = Df_Exam.SubSet2, REML = FALSE)
+
+summary(pp_multi_model)
+
+aic.full <- AIC(pp_multi_model)
+
+cat("Full Model AIC:", aic.full)
+
+anova(pp_multi_model)
+
+```
+
+
+\newpage
+
+```{r echo=FALSE, message=FALSE, warning=FALSE}
+
+print(summ(pp_multi_model))
+
+```
+
+The generalized linear mixed model examining the effects of various predictors on normalized perinasal perspiration (PP_logNorm) as a response variable offer several insights
+
+- The model indicates significant effects of question type on perinasal perspiration levels. Specifically, the type "VIDEO" question (QTypeV) significantly reduces perinasal perspiration, which suggests that participants experience less stress when engaging with video questions compared to abstract (QTypeA) and word (QTypeW) questions. This finding aligns with the study’s hypothesis that more engaging content could reduce stress.
+
+- The random effects for the participant indicate considerable variation between individuals, which is expected in physiological data due to inherent biological differences. The intraclass correlation coefficient (ICC) of 0.55 implies that about 55% of the variability in perspiration rates can be attributed to differences between participants, underscoring the importance of accounting for individual differences in stress responses.
+
+- Among the fixed effects, the most noteworthy is the strong positive association of question solving time (QSolTime) with increased perspiration, which indicates that longer times spent on questions may be associated with higher stress levels. Additionally, the strong and significant positive effect of QTypeW on perspiration suggests that traditional word problems may induce more stress compared to other types of questions.
+
+- The AIC and BIC suggest a good fit, though the relatively low pseudo-R^2 values indicate that while the model explains some variability in perinasal perspiration, much of the variation remains unexplained by the included predictors.
+
+- The lack of significant effects from the State Anxiety Inventory (SAI) scores and accuracy of answers (Accuracy.Score) on perinasal perspiration is interesting. It might imply that these variables do not directly influence the physiological stress response as measured by perspiration.
+
+## Optimal Model by "Backward" Elimination 
+
+```{r echo=FALSE}
+
+step_bw <- step(pp_multi_model, direction = "backward")
+
+step_bw # Display elimination results
+
+# get model
+final_model <- get_model(step_bw)
+suggested_fm <- final_model@call
+
+pp_multi_model.bw <- eval(suggested_fm)
+
+
+```
+
+## Normalized PP_log Optimal Model by BE
+
+```{r echo=FALSE, message=FALSE, warning=FALSE}
+
+summary(pp_multi_model.bw)
+
+anova(pp_multi_model.bw)
+
+aic.bw <- AIC(pp_multi_model.bw)
+
+# aic.bw
+cat("\nOptimal Model of BE AIC:", aic.bw, "\n\n")
+
+# aic.full
+cat("Full Model AIC:", AIC(pp_multi_model))
+
+```
+
+
+```{r echo=FALSE, message=FALSE, warning=FALSE}
+
+print(summ(pp_multi_model.bw))
+
+```
+
+
+
+The optimal model derived from a backward elimination process for analyzing the effect of question types on normalized perinasal perspiration (PP_logNorm) reveals following findings
+
+- The type of questions, specifically the word type (QTypeW), shows a significant positive effect on the normalized perinasal perspiration levels, as indicated by a p-value of 0.00. This suggests that word questions are associated with higher stress levels among participants compared to other types of questions. Conversely, abstract questions (QTypeA), while also modeled, do not show a statistically significant effect (p = 0.16).
+
+-  The model's fit, reflected in the AIC and BIC values, shows an improvement over the full model, suggesting that removing less impactful variables has refined the model's predictive accuracy and interpretability.
+
+- The random effects for participants reveal that individual differences contribute significantly to the variability in perspiration levels (ICC = 0.55). This indicates that more than half of the variability in perspiration can be attributed to between-participant differences, which underscores the importance of modeling these effects in physiological studies.
+
+- The final optimal model, with a more streamlined set of predictors after the backward elimination, is more parsimonious while still capturing the main effects of interest. The significant effects of QTypeW point to the potential stress-inducing nature of word questions in math tests, supporting part of the study's hypothesis that different question types might evoke different stress responses.
+
+## Comparison of Full and Optimal Models
+
+```{r echo=FALSE}
+
+# Compare the models
+models <- list(pp_multi_model, pp_multi_model.bw)
+
+model.names <- c('Full Model for PP', 'Final Optimal Model PP' )
+
+comp = aictab(cand.set = models, modnames = model.names)
+comp %>%
+  kable("markdown", booktabs = T,  escape = FALSE, caption = "Compare the models for perinasal perspiration", digits = 3) %>%
+  kable_styling(latex_options = c("stripdown","hold_position"), font_size = 10)
+
+
+```
+
+
+- The full model (Model 1) includes more predictors (K = 8) compared to the optimal model (Model 2), which has only 5 predictors. Despite the greater complexity of the full model, it does not necessarily provide better performance. This is evident in the AIC, where the optimal model has a lower AICc -774.013 compared to the full model -768.612, indicating a better balance of model fit and complexity in the optimal model.
+
+- The Log-Likelihood values are very close between the two models suggest that the reduction of parameters in the optimal model has not substantially decreased the model's ability to fit the data. The AIC weight for the optimal model is 0.937, substantially higher than that of the full model 0.063, which supports the optimal model being the preferred choice based on the criterion used.
+
+- The Delta AIC value of 5.4 for the full model relative to the optimal model further supports the selection of the optimal model.
+
+- The optimal model achieves nearly the same log-likelihood with fewer parameters, which is a demonstration of parsimony—achieving comparable or better explanatory power with a simpler model. This is particularly important in statistical modeling as it avoids overfitting and makes the model more generalizable.
+
+These points indicate that the optimal model, by using fewer predictors, provides a more efficient and effective fit for the data, making it the better choice for understanding the impact of different question types on students' stress levels as measured by perinasal perspiration.
+
+\newpage
+
+## Optimal Model Plots
+
+### Estimated Effects Plot
+
+```{r echo=FALSE}
+
+m.plot <- sjPlot::plot_model(pp_multi_model.bw,
+  show.values = TRUE, show.p = TRUE,
+  title = ""
+) +
+  theme(
+    plot.title = element_text(hjust = 0.5, size = 14, face = "bold"),
+    axis.text = element_text(size = 10)
+  ) + theme_bw()
+
+# update the terms name.
+m.plot$data$term <- c("QuestionType A", "QuestionType W")
+
+m.plot
+
+```
+
+The above plot displays the estimates for the effects of different question types on normalized perinasal perspiration. 
+
+- Word Questions (QTypeW): There's a significant positive effect (estimate = 0.07) indicated by the three asterisks, suggesting that word questions significantly increase stress levels compared to the baseline (likely the video questions in this context).
+
+- Abstract Questions (QTypeA): The effect size is smaller (estimate = 0.02) and not statistically significant, indicating that abstract questions have a minimal and non-significant impact on stress levels relative to the baseline
+
+This visualization clearly highlights that word questions are particularly stressful for participants, whereas abstract questions do not significantly alter stress levels
+
+### Random Effects Plot
+
+```{r echo=FALSE, fig.height=10, fig.width=6}
+
+qc.pm.re <- plot_model(pp_multi_model.bw,
+  type = "re",
+  show.values = TRUE, value.offset = .3
+) +
+  theme_bw() +
+  theme(
+    axis.text.x = element_text(size = 10, face = "bold"),
+    axis.text.y = element_text(size = 10, face = "bold"),
+    plot.title = element_blank()
+  )
+
+qc.pm.re
+
+```
+
+The above plot presents individual differences in the response variable for each participant (S001 to S030).
+
+There is considerable variability in responses among participants. Some show significant increases in the response variable, marked in blue S030 with an increase of 0.22), indicating a possible increase in stress or a similar measure.
+
+- Many participants, depicted in red, show negative changes (e.g., S006 with a decrease of -0.30). This suggests that the conditions or interventions led to a decrease in the response variable for these individuals, potentially indicating reduced stress or improvement in the targeted condition.
+
+- Certain individuals (like S019 and S016) display notably high positive changes, suggesting particularly strong responses to the experimental conditions. In contrast, participants like S006 and S012 exhibit strong negative changes, highlighting a significant reduction in the measured response.
+
+### Predictors Plot
+
+```{r,echo=FALSE, warning=FALSE}
+
+# Create the significances legend
+levels <- c("B", "E")
+num <- c(10, 15)
+ymin <- c(0, 0)
+ymax <- c(2, 3)
+
+Legend_DF <- data.frame(levels, num, ymin, ymax)
+
+plot <- ggplot(Legend_DF, aes(x = levels, y = num, colour = levels)) +
+  geom_errorbar(aes(ymin = ymin, ymax = ymax), size = 1.1) +
+  theme_bw() +
+  theme(
+    panel.grid = element_blank(),
+    axis.text.x = element_text(face = "bold", size = 10),
+    legend.position = "bottom",
+    legend.direction = "horizontal",
+    legend.title = element_blank(),
+    legend.key.width = unit(2, "cm"),
+    legend.text = element_text(size = 20)
+  ) +
+  theme(
+    axis.ticks.y = element_blank(),
+    axis.ticks.x = element_blank()
+  ) +
+  scale_color_manual(
+    values = c("gray", "black", "green", "blue", "red"),
+    breaks = c("A", "B", "C", "D", "E"),
+    labels = c("Reference", "NS", "*", "**", "***")
+  )
+#print(plot)
+
+mylegend <- get_legend(plot)
+```
+
+```{r echo=FALSE}
+
+preds <- ggpredict(pp_multi_model.bw, terms = "QType")
+
+preds$Signf <- c(" ", "NS", "***") 
+
+qc.pm_pp <- ggplot(preds, aes(x = x, y = predicted, ymin = conf.low, ymax = conf.high, color = Signf)) +
+  geom_point(size = 6) +
+  geom_line(size = 2, aes(group = x)) +
+  geom_errorbar(width = 0, size = 2.5) +
+  scale_color_manual(values = c(" " = "gray", "NS" = "black", "*" = "green", "**" = "blue", "***" = "red"),
+                     labels = c(" " = "reference", "NS" = "NS", "*" = "*", "**" = "**", "***" = "***")) +
+  theme_bw() +
+  theme(
+    panel.grid = element_blank(),
+    plot.title = element_text(hjust = 0.5),
+    axis.text.x = element_text(size = 10, face = "bold.italic"),
+    axis.text.y = element_text(size = 10, face = "bold"),
+    legend.position = "None",
+    legend.title = element_blank()  # Remove the title of the legend if you prefer
+  ) +
+  labs(
+    x = "Question Type",
+    y = expression(bold(paste(LogPP[Norm], " [", degree, "C"^2, "]"))),
+    title = ""
+  )
+
+pp.pred.final <- ggarrange(qc.pm_pp, ncol = 1, nrow = 1)
+final_plot <- cowplot::plot_grid(pp.pred.final, mylegend, nrow = 2, rel_heights = c(.9, .1))
+final_plot
+
+```
+
+The plot shows the normalized log of perinasal perspiration (LogPPNorm) across three question types: Video (V), Abstract (A), and Word (W).
+
+- The Word questions (W) show a significantly higher level of perinasal perspiration (marked in red with three asterisks) compared to the other types. This indicates a notably higher stress response when participants are faced with Word questions.
+
+- Both Video (V) and Abstract (A) question types show lower levels of perinasal perspiration. 
+
+- The significant marker (***), exclusively associated with the Word question type, underscores a statistically significant difference in stress levels induced by this type of question compared to the baseline, which likely includes the other two question types.
+
+This analysis clearly highlights that Word questions are more stressful for participants compared to Humours video based and Abstract Questions.
+
+\newpage 
+
+# Step 2
+
+**Conduct generalized linear modeling using HR as the response variable. Justify your methodology and express your insights.**
+
+## Full Model 2 - Normalized Hr E4 Perfect with Participant centered Random Effect
+
+
+```{r echo=FALSE, message=FALSE, warning=FALSE, paged.print=FALSE}
+
+hr_multi_model <- lmer(HRE4PerfNorm ~ (1 | ParticipantID) + SAI + QType + QSolTime + Accuracy.Score, data = Df_Exam.SubSet2, REML = FALSE)
+
+summary(hr_multi_model)
+
+anova(hr_multi_model)
+
+aic.full <- AIC(hr_multi_model)
+
+cat("Full Model AIC:", aic.full)
+
+```
+
+```{r echo=FALSE, message=FALSE, warning=FALSE, paged.print=FALSE}
+
+print(summ(hr_multi_model))
+
+```
+
+The generalized linear mixed model using normalized heart rate (HR E4 Perfect) as the response variable provide insights into how different factors influence participant heart rates during math exam:
+
+- The model indicates a significant positive effect of Word questions (QTypeW) on heart rate (estimate = 1.59, p < 0.001), suggesting that Word questions are associated with a notable increase in heart rate, indicating higher stress or cognitive effort compared to other question types. Abstract questions (QTypeA), although showing a positive effect (estimate = 0.68), are not statistically significant (p = 0.07).
+
+- The random effects for ParticipantID indicate that there is substantial variability between participants (variance = 27.88, Std.Dev = 5.28), accounting for individual differences in heart rate responses. The ICC of 0.62 implies that 62% of the variability in heart rate can be attributed to differences between participants.
+
+- The AIC and BIC values are 5383.10 and 5421.76, respectively, suggesting the model's adequacy in capturing the data variability, although the pseudo-R^2 values (0.01 for fixed effects and 0.63 for total) indicate that while the model explains a significant portion of the variance, a large part of variability due to fixed effects remains unexplained.
+
+- Other factors, such as State Anxiety Inventory (SAI), solving time (QSolTime), and accuracy (Accuracy.Score), do not show significant effects on heart rate. This could suggest that these variables might not be as closely linked to physiological responses as the type of question.
+
+These findings underscore the stress-inducing potential of word-based questions.
+
+## Optimal Model by Backward Elimination 
+
+
+```{r echo=FALSE}
+
+step_bw <- step(hr_multi_model, direction = "backward")
+
+step_bw 
+
+# get model
+final_model <- get_model(step_bw)
+suggested_fm <- final_model@call
+
+hr_multi_model.bw <- eval(suggested_fm)
+
+
+```
+
+## Normalized HRE4 Perfect Optimal Model by BE
+
+```{r echo=FALSE, message=FALSE, warning=FALSE}
+
+summary(hr_multi_model.bw)
+
+print(summ(hr_multi_model.bw))
+
+aic.bw <- AIC(hr_multi_model.bw)
+
+# aic.bw
+cat("\nOptimal Model of BE AIC:", aic.bw, "\n\n")
+
+# aic.full
+cat("Full Model AIC:", AIC(hr_multi_model))
+```
+
+The optimal model obtained through backward elimination for normalized HR E4 Perfect data focused on the effects of question types, providing a simplified and effective analysis of the factors influencing heart rate variability during math exam:
+
+- The model shows significant effects of question types on heart rate, with Word questions (QTypeW) having a substantial and statistically significant positive impact (estimate = 1.56, p < 0.001). This indicates that Word questions are associated with a higher increase in heart rate, suggesting increased stress. Abstract questions (QTypeA) also show a positive effect on heart rate, though the effect is at the threshold of significance (p = 0.05).
+
+- The backward elimination process resulted in a model that performs comparably to the full model while being more parsimonious. The AIC value of the optimal model (5377.261) is slightly lower than that of the full model (5383.102), indicating a better model fit with fewer predictors.
+
+- The random effects indicate that a significant portion of the variability in heart rate responses is due to differences between participants (ICC = 0.62), underscoring the importance of individual differences in physiological responses during exams.
+
+- The pseudo-R^2 for the total model is 0.63, which implies that the model explains a substantial portion of the variability in the heart rate data. However, the pseudo-R^2 for fixed effects alone is quite low (0.01), suggesting that most of the explained variance is attributed to the random effects rather than the fixed effects.
+
+These insights underline the critical influence of question types on physiological stress responses during exams, with Word questions notably increasing heart rate, potentially affecting student performance.
+
+## Comparison of Full and Optimal Models
+
+```{r echo=FALSE}
+
+# Compare the models
+models <- list(hr_multi_model, hr_multi_model.bw)
+
+model.names <- c('Full Model for HR', 'Final Optimal Model HR' )
+
+comp = aictab(cand.set = models, modnames = model.names)
+comp %>%
+  kable("markdown", booktabs = T,  escape = FALSE, caption = "Compare the models for HR E4 Perfect Normalized values", digits = 3) %>%
+  kable_styling(latex_options = c("stripdown","hold_position"), font_size = 10)
+
+
+```
+
+The above comparison between the full model and the final optimal model for normalized heart rate (HR E4 Perfect Normalized values), highlighting the efficiency of model simplification:
+
+- The optimal model uses fewer parameters (K = 5) compared to the full model (K = 8), indicating a more parsimonious approach.
+
+- The AIC for the optimal model is slightly lower (5377.326) than for the full model (5383.259), suggesting that the optimal model achieves a better fit with fewer variables. The Delta AICc value of 5.933 further supports the superiority of the optimal model, indicating a meaningful improvement in model efficiency by reducing overfitting and retaining only the most influential predictors.
+
+- Despite the close log-likelihood (LL) values between the two models (-2683.630 for the optimal vs. -2683.551 for the full), the AIC weights heavily favor the optimal model (0.951) over the full model (0.049). This indicates that the optimal model is much more likely to be the best model for these data according to the AICc criteria.
+
+These comparisons underscore the effectiveness of the optimal model in balancing explanatory power and model simplicity, making it the preferred choice for analyzing the impact of different variables on heart rate during the experiment.
+
+## Final Model Plots
+
+### Estimated Effects  Plot
+
+```{r echo=FALSE}
+
+m.plot <- sjPlot::plot_model(hr_multi_model.bw,
+  show.values = TRUE, show.p = TRUE,
+  title = ""
+) +
+  theme(
+    plot.title = element_text(hjust = 0.5, size = 14, face = "bold"),
+    axis.text = element_text(size = 10)
+  ) + theme_bw()
+
+# update the terms name.
+m.plot$data$term <- c("QuestionType A", "QuestionType W")
+
+m.plot
+
+```
+
+The above plot clearly illustrates the estimated effects of different question types on normalized heart rate:
+
+- Word Questions (QTypeW) Exhibit a significant increase in heart rate with an estimate of 1.56, marked by three asterisks (***), indicating a strong and statistically significant effect. This suggests that Word questions significantly elevate participants' heart rates, likely reflecting increased stress.
+
+- Abstract Questions (QTypeA) show a smaller effect with an estimate of 0.65, marked by one asterisk (*), which indicates a significant but less pronounced impact compared to Word questions. This effect is substantial enough to consider that Abstract questions also raise heart rates, albeit to a lesser extent.
+
+### Random Effects Plot
+
+```{r echo=FALSE, fig.height=10, fig.width=6}
+
+qc.pm.re <- plot_model(hr_multi_model.bw,
+  type = "re",
+  show.values = TRUE, value.offset = .3
+) +
+  theme_bw() +
+  theme(
+    axis.text.x = element_text(size = 10, face = "bold"),
+    axis.text.y = element_text(size = 10, face = "bold"),
+    plot.title = element_blank()
+  )
+
+qc.pm.re
+
+```
+
+The above random effects plot shows the individual variability in the response for each participant (S001 to S030). The plot helps identify participants who deviate significantly from the group.
+
+- Participants like S030 (+16.66), S020 (+6.11), and S023 (+5.55) exhibit significantly higher effects, indicating an increased response compared to the average. These participants might be experiencing heightened stress being tracked.
+
+- Conversely, participants such as S015 (-10.86) and S013 (-6.15) show substantial negative deviations, suggesting a lower-than-average response. These deviations might indicate lower levels of stress or better handling of the conditions being measured.
+
+- The variability highlighted in the plot underscores the importance of accounting for individual differences in analyses. This could be crucial for interventions based on the measured response, as it reflects how participants uniquely react to the same conditions.
+
+### Predictors plot
+
+```{r,echo=FALSE, warning=FALSE}
+
+# Create the significances legend
+levels <- c("C", "E")
+num <- c(10, 15)
+ymin <- c(0, 0)
+ymax <- c(2, 3)
+
+Legend_DF <- data.frame(levels, num, ymin, ymax)
+
+plot <- ggplot(Legend_DF, aes(x = levels, y = num, colour = levels)) +
+  geom_errorbar(aes(ymin = ymin, ymax = ymax), size = 1.1) +
+  theme_bw() +
+  theme(
+    panel.grid = element_blank(),
+    axis.text.x = element_text(face = "bold", size = 10),
+    legend.position = "bottom",
+    legend.direction = "horizontal",
+    legend.title = element_blank(),
+    legend.key.width = unit(2, "cm"),
+    legend.text = element_text(size = 20)
+  ) +
+  theme(
+    axis.ticks.y = element_blank(),
+    axis.ticks.x = element_blank()
+  ) +
+  scale_color_manual(
+    values = c("gray", "black", "green", "blue", "red"),
+    breaks = c("A", "B", "C", "D", "E"),
+    labels = c("Reference", "NS", "*", "**", "***")
+  )
+#print(plot)
+
+mylegend <- get_legend(plot)
+```
+
+```{r echo=FALSE}
+
+preds <- ggpredict(hr_multi_model.bw, terms = "QType")
+
+preds$Signf <- c(" ", "*", "***") 
+
+qc.pm_hr <- ggplot(preds, aes(x = x, y = predicted, ymin = conf.low, ymax = conf.high, color = Signf)) +
+  geom_point(size = 6) +
+  geom_line(size = 2, aes(group = x)) +
+  geom_errorbar(width = 0, size = 2.5) +
+  scale_color_manual(values = c(" " = "gray", "NS" = "black", "*" = "green", "**" = "blue", "***" = "red"),
+                     labels = c(" " = "reference", "NS" = "NS", "*" = "*", "**" = "**", "***" = "***")) +
+  theme_bw() +
+  theme(
+    panel.grid = element_blank(),
+    plot.title = element_text(hjust = 0.5),
+    axis.text.x = element_text(size = 10, face = "bold.italic"),
+    axis.text.y = element_text(size = 10, face = "bold"),
+    legend.position = "None",
+    legend.title = element_blank()  # Remove the title of the legend if you prefer
+  ) +
+  labs(
+    x = "Question Type",
+    y = "HRE4PerfNorm [BPM]",
+    title = ""
+  )
+
+hr.pred.final <- ggarrange(qc.pm_hr, ncol = 1, nrow = 1)
+final_plot <- cowplot::plot_grid(hr.pred.final, mylegend, nrow = 2, rel_heights = c(.9, .1))
+final_plot
+
+```
+
+The plot illustrates the impact of different question types on normalized heart rate (HR E4 Perfect Norm) with each question type marked by a different color and significance level:
+
+- Abstract Questions (A) display a slight significant effect (marked by a green color and one asterisk), indicating a modest increase in heart rate. This suggests that abstract questions may induce a mild stress response.
+
+- Word Questions (W) have a highly significant effect on heart rate (marked in red with three asterisks). The direction and magnitude of the effect suggest a substantial increase in heart rate, indicating that these questions likely cause higher stress or cognitive demand.
+
+This visualization helps underline the differential impact of question types on physiological responses, particularly highlighting the stress-inducing potential of word and abstract questions compared to video questions.
+
+\newpage
+
+# Step 3
+
+**Conduct generalized linear modeling using HRV as the response variable. Justify your methodology and express your insights.**
+
+## Full Model 3 - Normalized HRV IBI with Participant centered Random Effect
+
+```{r echo=FALSE, message=FALSE, warning=FALSE, paged.print=FALSE}
+
+hrv_multi_model <- lmer(HRVIBINorm ~ (1 | ParticipantID) + SAI + QType + QSolTime + Accuracy.Score, data = Df_Exam.SubSet2, REML = FALSE)
+
+summary(hrv_multi_model)
+
+anova(hrv_multi_model)
+
+aic.full <- AIC(hrv_multi_model)
+
+cat("Full Model AIC:", aic.full)
+
+```
+
+
+```{r echo=FALSE, message=FALSE, warning=FALSE, paged.print=FALSE}
+
+print(summ(hrv_multi_model))
+
+```
+
+To assess the impact of video-based humorous question types, we conducted a linear mixed-effects regression analysis using Heart Rate Variability (HRV) as the response variable to indicate stress. 
+
+- The initial full model included State and Trait Anxiety (SAI) scores, question type, question solving time, and Accuracy scores as predictors, with Participant ID as a random effect. 
+
+- The model summary revealed that, except for question type, none of the other predictors had p-values greater than 0.05, indicating they do not significantly affect HRV. This suggests that these question types likely increase stress, leading to reduced HRV, which is typically associated with higher stress levels.
+
+- The pseudo R-squared values showed that without random effects, only 4% of the model residuals are explained, whereas with random effects, the explanation jumps significantly to 78%. This suggests that individual physiological responses play a critical role in the model's effectiveness, underscoring the importance of accounting for personal variance among participants.
+
+- This underscores the crucial importance of considering the effect of inter-individual HRV variability among exam participants, as it greatly enhances the model's explanative power compared to considering only fixed effects. Notably, the video question type is absent from the model summary because it was used as a reference variable for comparison.
+
+
+## Optimal Model by Backward Elimination 
+
+```{r echo=FALSE}
+
+step_bw <- step(hrv_multi_model, direction = "backward")
+
+step_bw # Display elimination results
+
+# get model
+final_model <- get_model(step_bw)
+suggested_fm <- final_model@call
+
+hrv_multi_model.bw <- eval(suggested_fm)
+
+```
+
+## Normalized HRV.IBI Optimal Model by BE
+
+```{r echo=FALSE, message=FALSE, warning=FALSE}
+
+summary(hrv_multi_model.bw)
+
+print(summ(hrv_multi_model.bw))
+
+aic.bw <- AIC(hrv_multi_model.bw)
+
+# aic.bw
+cat("\nOptimal Model of BE AIC:", aic.bw, "\n\n")
+
+# aic.full
+cat("Full Model AIC:", AIC(hrv_multi_model))
+
+```
+
+In the refined analysis of HRV IBI using a linear mixed-effects model, the backward elimination method led to a model that focuses exclusively on question type as the predictor, removing non-significant variables like SAI scores, question solving time, and accuracy scores.
+
+- By backward elimination, non-significant predictors were removed, which resulted in a decrease in both AIC and BIC values. This suggests an improvement in the model's efficiency without compromising its explanatory power. The optimal model's focus on question type demonstrates that this predictor alone is sufficiently robust to explain changes in HRV among participants.
+
+- The analysis highlights that both Abstract (QTypeA) and Word (QTypeW) questions significantly decrease HRV compared to the baseline (video questions). The strong negative coefficients for these question types (QTypeA: -0.02, QTypeW: -0.02) with very significant p-values indicate a substantial impact on HRV, suggesting increased physiological stress associated with these types of questions.
+
+- The inclusion of Participant ID as a random effect is crucial, accounting for inter-individual variability. As discussed, the total pseudo R-squared value indicates that the model explains 78% of the variability, which is highly satisfactory for our analysis.
+
+## Comparison of Full and Optimal Models
+
+```{r echo=FALSE}
+
+# Compare the models
+models <- list(hrv_multi_model, hrv_multi_model.bw)
+
+model.names <- c('Full Model for HRV', 'Final Optimal Model HRV' )
+
+comp = aictab(cand.set = models, modnames = model.names)
+comp %>%
+  kable("markdown", booktabs = T,  escape = FALSE, caption = "Compare the models for HRV IBI Normalized values", digits = 3) %>%
+  kable_styling(latex_options = c("stripdown","hold_position"), font_size = 10)
+
+
+```
+
+The comparison between the full model and the final optimal model for HRV IBI normalized values highlights key aspects of model selection and simplification:
+
+- The optimal model has fewer parameters (K = 5) compared to the full model (K = 8), suggesting a more parsimonious approach. Despite this reduction, the optimal model achieves a lower AIC corrected for small sample sizes (AICc = -2576.487) than the full model (AICc = -2574.153), indicating a better fit with fewer predictors.
+
+- The likelihood (LL) values are very close between the two models (Optimal: 1293.276 vs. Full: 1295.155), indicating similar model performance despite the reduction in complexity.
+
+- The AIC weight for the optimal model is 0.763, which is substantially higher than the full model’s weight of 0.237. This metric shows a stronger preference for the optimal model based on the AICc values, suggesting it is approximately three times more likely to be the better model for these data.
+
+- The Delta AICc of 2.334 for the full model relative to the optimal model further underscores the efficiency of the optimal model. A lower Delta AICc indicates less information loss, supporting the decision to streamline the predictors without losing significant explanatory power.
+
+## Final Model Plots
+
+### Estimated Effects Plot
+
+```{r echo=FALSE}
+
+m.plot <- sjPlot::plot_model(hrv_multi_model.bw,
+  show.values = TRUE, show.p = TRUE,
+  title = ""
+) +
+  theme(
+    plot.title = element_text(hjust = 0.5, size = 14, face = "bold"),
+    axis.text = element_text(size = 10)
+  ) + theme_bw()
+
+# update the terms name.
+m.plot$data$term <- c("QuestionType A", "QuestionType W")
+
+m.plot
+
+```
+
+The coefficient plot for the optimal model indicates that both Word and Abstract type questions are significant and have negative coefficients, suggesting that when students attempt these types of questions, their HRV values are lower compared to the reference video questions. There are no random effect coefficients in the coefficient plots because random effects sum to zero. 
+
+Both question types are marked with three asterisks (***), confirming that their effects are statistically significant. These results suggest that both Abstract and Word questions significantly decrease HRV, a marker typically associated with increased stress or decreased autonomic nervous system resilience. 
+
+### Random Effects Plot
+
+```{r echo=FALSE, fig.height=10, fig.width=6}
+
+qc.pm.re <- plot_model(hrv_multi_model.bw,
+  type = "re",
+  show.values = TRUE, value.offset = .3
+) +
+  theme_bw() +
+  theme(
+    axis.text.x = element_text(size = 10, face = "bold"),
+    axis.text.y = element_text(size = 10, face = "bold"),
+    plot.title = element_blank()
+  )
+
+qc.pm.re
+
+```
+
+We separately plotted the random effects from this plot we can observe that there is alot of variability in coefficients ranging from -0.26 to 0.34 hence indicating the significance or importance considering interindividual variability in out model.
+
+- Some participants like S016 and S013 show notably high positive deviations (0.34 and 0.15 respectively), indicating a higher than average response, possibly suggesting lower stress levels or better physiological resilience to the exam conditions.
+
+- Participants such as S005 and S009 demonstrate substantial negative deviations (-0.26 and -0.16 respectively), which might indicate increased stress or a more significant physiological response to the exam settings compared to their peers.
+
+- Several participants, such as S014 and S011, show deviations very close to zero, suggesting their responses align closely with the average participant's response in the study.
+
+### Predictors plot
+
+```{r,echo=FALSE, warning=FALSE}
+
+# Create the significances legend
+levels <- c("E", "E")
+num <- c(10, 15)
+ymin <- c(0, 0)
+ymax <- c(2, 3)
+
+Legend_DF <- data.frame(levels, num, ymin, ymax)
+
+plot <- ggplot(Legend_DF, aes(x = levels, y = num, colour = levels)) +
+  geom_errorbar(aes(ymin = ymin, ymax = ymax), size = 1.1) +
+  theme_bw() +
+  theme(
+    panel.grid = element_blank(),
+    axis.text.x = element_text(face = "bold", size = 10),
+    legend.position = "bottom",
+    legend.direction = "horizontal",
+    legend.title = element_blank(),
+    legend.key.width = unit(2, "cm"),
+    legend.text = element_text(size = 20)
+  ) +
+  theme(
+    axis.ticks.y = element_blank(),
+    axis.ticks.x = element_blank()
+  ) +
+  scale_color_manual(
+    values = c("gray", "black", "green", "blue", "red"),
+    breaks = c("A", "B", "C", "D", "E"),
+    labels = c("Reference", "NS", "*", "**", "***")
+  )
+#print(plot)
+
+mylegend <- get_legend(plot)
+```
+
+```{r echo=FALSE}
+
+preds <- ggpredict(hrv_multi_model.bw, terms = "QType")
+
+preds$Signf <- c(" ", "***", "***") 
+
+qc.pm_hrv <- ggplot(preds, aes(x = x, y = predicted, ymin = conf.low, ymax = conf.high, color = Signf)) +
+  geom_point(size = 6) +
+  geom_line(size = 2, aes(group = x)) +
+  geom_errorbar(width = 0, size = 2.5) +
+  scale_color_manual(values = c(" " = "gray", "NS" = "black", "*" = "green", "**" = "blue", "***" = "red"),
+                     labels = c(" " = "reference", "NS" = "NS", "*" = "*", "**" = "**", "***" = "***")) +
+  theme_bw() +
+  theme(
+    panel.grid = element_blank(),
+    plot.title = element_text(hjust = 0.5),
+    axis.text.x = element_text(size = 10, face = "bold.italic"),
+    axis.text.y = element_text(size = 10, face = "bold"),
+    legend.position = "None",
+    legend.title = element_blank()  # Remove the title of the legend if you prefer
+  ) +
+ labs(title = "",
+       y = "HRV.IBI Norm [ms]", x = "Question Type")
+
+hrv.pred.final <- ggarrange(qc.pm_hrv, ncol = 1, nrow = 1)
+final_plot <- cowplot::plot_grid(hrv.pred.final, mylegend, nrow = 2, rel_heights = c(.9, .1))
+final_plot
+
+```
+The above plot shows the normalized heart rate variability (HRV) responses to different question types in math exam:
+
+- Abstract Questions (A) and Word Questions (W) both show significant decreases in HRV, marked by red and indicated with three asterisks (***), denoting a high level of statistical significance. This suggests that these question types are associated with increased cognitive or emotional stress, leading to reduced HRV, a marker generally associated with decreased parasympathetic nervous system activity and increased stress.
+
+Considering these effects, we see from the predictors plot that moving from the reference video type to Abstract and Word type questions, HRV values decrease, indicating that students experience less stress when attempting humorous math video questions compared to the other types.
+
+# Comparison Plot for Three Stress Variables
+
+```{r,echo=FALSE, warning=FALSE}
+
+# Create the significances legend
+levels <- c("A", "B", "C", "D", "E")
+num <- c(10, 15, 20, 25, 30)
+ymin <- c(0, 0, 0, 0, 0)
+ymax <- c(2, 3, 2, 3, 2)
+
+Legend_DF <- data.frame(levels, num, ymin, ymax)
+
+plot <- ggplot(Legend_DF, aes(x = levels, y = num, colour = levels)) +
+  geom_errorbar(aes(ymin = ymin, ymax = ymax), size = 1.1) +
+  theme_bw() +
+  theme(
+    panel.grid = element_blank(),
+    axis.text.x = element_text(face = "bold", size = 10),
+    legend.position = "bottom",
+    legend.direction = "horizontal",
+    legend.title = element_blank(),
+    legend.key.width = unit(2, "cm"),
+    legend.text = element_text(size = 20)
+  ) +
+  theme(
+    axis.ticks.y = element_blank(),
+    axis.ticks.x = element_blank()
+  ) +
+  scale_color_manual(
+    values = c("gray", "black", "green", "blue", "red"),
+    breaks = c("A", "B", "C", "D", "E"),
+    labels = c("Ref", "NS", "*", "**", "***")
+  )
+#print(plot)
+
+mylegend <- get_legend(plot)
+```
+
+```{r echo=FALSE, fig.height=5, fig.width=13}
+
+
+Stress.pred.final <- ggarrange(qc.pm_pp, qc.pm_hr, qc.pm_hrv,  ncol = 3, nrow = 1)
+final_plot_all <- cowplot::plot_grid(Stress.pred.final, mylegend, nrow = 2, rel_heights = c(.9, .1))
+final_plot_all
+
+```
+
+From the analysis of the three model plots of stress indicators—perspiration (PP), heart rate (HR), and heart rate variability (HRV)—a consistent pattern emerges: participants show lower heart rate and perspiration levels when engaging with video type questions as compared to abstract and word type questions. Additionally, HRV values are notably higher for video type questions, suggesting that participants experience significantly lower stress levels with this format.
+
+This contrasts sharply with the word type questions, which appear to be the most stressful, followed by abstract questions. Video questions, on the other hand, induce the least stress. This clear differentiation in physiological stress responses to different types of questions highlights the potential benefits of incorporating humorous video content in educational settings to alleviate stress and enhance learning experiences.
+
+\newpage
+
+# Step 4
+
+**Conduct logistic regression modeling using Accuracy.Score as the response variable. Justify your methodology and express your insights.**
+
+```{r message=FALSE, warning=FALSE, include=FALSE}
+
+QType <- factor(Df_Exam.SubSet2$QType, levels = c("V", "A", "W"))
+QName <- factor(Df_Exam.SubSet2$QName)
+
+### Here we scale the variables for the Generalized Model
+sQSolTime <- scale(Df_Exam.SubSet2$QSolTime)
+sPPlogMean <- scale(Df_Exam.SubSet2$PPlogMean)
+sPPlogNorm <- scale(Df_Exam.SubSet2$PPlogNorm)
+sHRE4PerfMean <- scale(Df_Exam.SubSet2$HRE4PerfMean)
+sHRE4PerfNorm <- scale(Df_Exam.SubSet2$HRE4PerfNorm)
+sHRVIBINorm <- scale(Df_Exam.SubSet2$HRVIBINorm)
+sSAI <- scale(Df_Exam.SubSet2$SAI)
+
+Accuracy.Score <- factor(Df_Exam.SubSet2$Accuracy.Score)
+
+#colSums((is.na(Df_Exam.SubSet2)))
+```
+
+## Full Model
+
+```{r echo=FALSE}
+
+#########################################################################
+### Modeling Grade vs fixed effects and  Normalized-type stress variables
+#########################################################################
+
+log_reg_FullModel1 <- glmer(Accuracy.Score ~ QType + sQSolTime + sPPlogNorm + sHRE4PerfNorm + sHRVIBINorm + sSAI + (1 | QName), family = binomial)
+
+summary(log_reg_FullModel1)
+
+```
+
+
+```{r echo=FALSE}
+
+print(summ(log_reg_FullModel1))
+
+```
+
+
+The logistic regression model aimed to determine factors influencing exam Accuracy Score, employing variables like question type, question solving time, and various physiological indicators. Notably, the model indicated significant effects from the solving time and State Anxiety Index (SAI), with solving time positively impacting accuracy scores (p < 0.001), suggesting that longer solving times may correlate with higher accuracy. Conversely, higher SAI scores negatively affected accuracy (p < 0.001), implying that increased anxiety could decrease performance.
+
+The fixed effects of question types A and W are also statistically significant, suggesting that these question types notably affect accuracy. The random effects, centered around different question names (QName), highlighted the variability in accuracy scores across different exam questions, underscoring the individual impact of specific questions on performance.
+
+Overall, the model explained a moderate proportion of variance in accuracy scores (pseudo R² total = 0.48), indicating a fair fit. The convergence issues noted suggest potential overfitting or the need for model simplification or adjustment of parameters. 
+
+\newpage
+
+## Manual Optimization:
+
+### Removing sPPlogNorm 
+
+```{r echo=FALSE}
+
+log_reg_FullModel <- glmer(Accuracy.Score ~ QType + sQSolTime + sHRE4PerfNorm + sHRVIBINorm + sSAI + (1 | QName), family = binomial)
+
+summary(log_reg_FullModel)
+
+print(summ(log_reg_FullModel))
+
+```
+
+When we remove PPlogNorm, we observe a significant decrease in AIC and BIC values, while the model's explainability (pseudo R-squared) remains unaffected. From the resulting model summary, we can observe that the least significant predictor is sHRE4PerfNorm, so we consider removing it in the next step.
+
+### Removing sHRE4PerfNorm 
+
+```{r echo=FALSE}
+
+log_reg_FullModel <- glmer(Accuracy.Score ~ QType + sQSolTime + sHRVIBINorm + sSAI + (1 | QName), family = binomial)
+
+summary(log_reg_FullModel)
+
+print(summ(log_reg_FullModel))
+
+```
+
+After removing sHRE4PerfNorm, we can observe from the model summary that the AIC value decreased slightly compared to the previous model, whereas the BIC value decreased more significantly. The R-squared value remains unaffected, indicating good model explainability even after removing sHRE4PerfNorm. Additionally, we notice that sHRVIBINorm is the least significant predictor, with a p-value close to 0.1. Therefore, we consider removing it in the next iteration.
+
+### Removing sHRVIBINorm 
+
+```{r echo=FALSE}
+
+log_reg_FullModel <- glmer(Accuracy.Score ~ QType + sQSolTime + sSAI + (1 | QName), family = binomial)
+
+summary(log_reg_FullModel)
+
+print(summ(log_reg_FullModel))
+
+```
+
+In this iteration, we eliminated the nonsignificant predictor sHRVIBINorm from the model. After reviewing the updated model summary and comparing it with the prior version, we noted a minor increase in the AIC by one point. However, there was a decrease of about four units in the BIC, and the model's explanatory power (pseudo R-squared) remained consistent. Although there was a small rise in AIC, the reduction in BIC and the stable pseudo R-squared support our decision to exclude sHRVIBINorm in the next iteration of the model. Additionally, while the question type remains a significant predictor, it is less impactful compared to the solving time for questions and the state anxiety scores. To further explore the model's explanatory potential, we removed the question type in the subsequent iteration.
+
+### Removing QType
+
+```{r echo=FALSE}
+
+log_reg_FullModel <- glmer(Accuracy.Score ~ sQSolTime + sSAI + (1 | QName), family = binomial)
+
+summary(log_reg_FullModel)
+
+print(summ(log_reg_FullModel))
+
+```
+
+After removing the question type, a clear improvement is evident when comparing the model summary to the previous iteration. Although the AIC increased very slightly (by one unit), the BIC reduced significantly (by approximately 10 units). Another interesting observation is that the model's explainability increased from a pseudo R-squared of 48% to 50%. Despite the slight increase in AIC, the decrease in BIC and the increase in model explainability outweigh it. Therefore, we plan to remove the question type from predictors. As a result, the final model obtained comprises only two highly significant predictors: question-solving time and State Anxiety Inventory scores.
+
+\newpage
+
+## Final Model 
+
+```{r echo=FALSE}
+
+
+FM_AccScore <- glmer(Accuracy.Score ~ 1 + sQSolTime + sSAI + (1 | QName), family = binomial)
+
+summary(FM_AccScore)
+
+anova(FM_AccScore)
+
+aic.bw <- AIC(FM_AccScore)
+
+cat("\nOptimal Model of Manual Elimination AIC:", aic.bw, "\n\n")
+
+# aic.full
+cat("Full Model AIC:", AIC(log_reg_FullModel1))
+```
+
+From the final model summary, it's evident that both question-solving time and State Anxiety Inventory questionnaire scores are highly significant predictors. Analyzing the coefficient estimates of these two predictors reveals the following:
+
+Question-solving time: The coefficient associated with question-solving time has a positive effect on accuracy. This implies that accuracy tends to increase when participants take more time to solve the question. In other words, participants who spend more time on a question are likely to provide more accurate answers.
+
+State Anxiety Inventory (SAI) scores: Conversely, the coefficient associated with SAI scores has a negative impact on accuracy. This suggests that students with higher SAI scores are more prone to providing less accurate answers compared to students with lower SAI scores. In essence, higher levels of state anxiety are associated with decreased accuracy in answering questions.
+
+\newpage
+
+## Comparison of Full and Optimal Models
+
+```{r echo=FALSE}
+
+# Compare the models
+models <- list(log_reg_FullModel1, FM_AccScore)
+
+model.names <- c('Full Model for HR', 'Final Optimal Model HR' )
+
+comp = aictab(cand.set = models, modnames = model.names)
+comp %>%
+  kable("markdown", booktabs = T,  escape = FALSE, caption = "Compare the models for logistic regression modeling using Accuracy.Score as the response variable", digits = 3) %>%
+  kable_styling(latex_options = c("stripdown","hold_position"), font_size = 10)
+
+
+```
+
+
+```{r echo=FALSE}
+
+print(summ(FM_AccScore))
+
+```
+
+In comparing the full model and the final optimal model for logistic regression using Accuracy.Score as the response variable, the optimal model shows a more streamlined approach with fewer predictors (4 vs. 9 in the full model). 
+
+The AIC values indicate a minimal improvement (950.150 for the optimal model vs. 951.771 for the full model), suggesting a slightly better fit with fewer parameters. The AIC weight for the optimal model is higher (0.692 vs. 0.308), implying it is more likely to be the better model among the two compared. 
+
+This refinement effectively captures the significant predictors without overly complicating the model, which aligns with the principle of parsimony in statistical modeling achieving maximum explanatory power with the fewest possible predictors.
+
+
+\newpage
+
+### Random Effects Plot
+
+```{r echo=FALSE, fig.height=10, fig.width=6}
+qc.pm.re <- plot_model(FM_AccScore,
+  type = "re",
+  show.values = TRUE, value.offset = .3
+) +
+  theme_bw() +
+  theme(
+    axis.text.x = element_text(size = 10, face = "bold"),
+    axis.text.y = element_text(size = 10, face = "bold"),
+    plot.title = element_blank()
+  )
+
+qc.pm.re
+
+```
+
+```{r,echo=FALSE, warning=FALSE}
+# Create the significances legend
+library(cowplot)
+levels <- c("B", "C")
+num <- c(10, 15)
+ymin <- c(0, 0)
+ymax <- c(2, 3)
+
+Legend_DF <- data.frame(levels, num, ymin, ymax)
+
+plot <- ggplot(Legend_DF, aes(x = levels, y = num, colour = levels)) +
+  geom_errorbar(aes(ymin = ymin, ymax = ymax), size = 1.1) +
+  theme_bw() +
+  theme(
+    panel.grid = element_blank(),
+    axis.text.x = element_text(face = "bold", size = 10),
+    legend.position = "bottom",
+    legend.direction = "horizontal",
+    legend.title = element_blank(),
+    legend.key.width = unit(2, "cm"),
+    legend.text = element_text(size = 20)
+  ) +
+  theme(
+    axis.ticks.y = element_blank(),
+    axis.ticks.x = element_blank()
+  ) +
+  scale_color_manual(
+    values = c("black", "red"),
+    # values = c("black", "#ee9a00", "red"),
+    breaks = c("B", "C"),
+    labels = c("NS     ", "***")
+  )
+# print(plot)
+
+mylegend <- get_legend(plot)
+```
+
+```{r echo=FALSE}
+# Solving Time
+# library(latex2exp)
+qst.pm <- plot_model(FM_AccScore,
+  type = "pred",
+  terms = "sQSolTime",
+  dot.size = 6,
+  line.size = 2,
+  title = "Question Time"
+) +
+  aes(color = "sQSolTime") +
+  scale_color_manual(values = "red") +
+  geom_vline(
+    xintercept = mean(sQSolTime),
+    linetype = "dashed",
+    color = "gray",
+    size = 1
+  ) + theme_bw() +
+  theme(
+    panel.grid = element_blank(),
+    axis.title.y = element_blank(),
+    plot.title = element_text(hjust = 0.5, face = "bold"),
+    axis.text.x = element_text(size = 10, face = "bold"),
+    axis.text.y = element_blank(), # element_text(size = 10, face = "bold"),
+    axis.ticks.y = element_blank(),
+    legend.position = "none"
+  ) + labs(x = "", y = "")
+
+
+sai.pm <- plot_model(log_reg_FullModel,
+  type = "pred",
+  terms = "sSAI",
+  dot.size = 6,
+  line.size = 2,
+  title = "SAI.Score"
+) +
+  aes(color = "sSAI") +
+  scale_color_manual(values = "red") +
+  geom_vline(
+    xintercept = mean(sSAI),
+    linetype = "dashed",
+    color = "gray",
+    size = 1
+  ) + theme_bw() +
+  theme(
+    panel.grid = element_blank(),
+    # axis.title.y = element_blank(),
+    plot.title = element_text(hjust = 0.5, face = "bold"),
+    axis.text.x = element_text(size = 10, face = "bold"),
+    axis.text.y = element_text(size = 10, face = "bold"),
+    legend.position = "none"
+  ) + labs(x = "", y = expression(paste(bolditalic("P(Accuracy.Score)")))) +
+  scale_y_continuous(limits = c(0, 1), labels = scales::percent)
+```
+
+The provided random effects plot showcases the variability of certain question types in terms of a specific outcome measure.
+
+- The plot displays a range of effect sizes and confidence intervals for different questions, coded by type (V, A, W). Each horizontal line represents a question, with the dot indicating the effect estimate and the lines showing the 95% confidence interval.
+
+- Question types 'V' (mostly on the left), 'A', and 'W' are scattered throughout the plot, showing different levels of influence. Notably, some questions like C3M105.1, A4M105.4, and C2M103.2 show particularly wide confidence intervals, suggesting less precision in the estimates for these questions.
+
+- Several questions, particularly under type 'A' and 'W', exhibit more substantial effects (rightward on the x-axis) suggesting a stronger influence on the outcome measure. For instance, C2M103.2, A2M106.4, and B3M107.1 show significant positive effects.
+
+
+- It's notable that while there's variability within each question type group, the 'A' and 'W' type questions tend to appear more frequently towards the right, suggesting these question types may generally elicit a stronger response or have a more substantial effect compared to 'V' type questions.
+
+### Predictors Plot
+
+
+```{r echo=FALSE, message=FALSE, warning=FALSE}
+pred.final <- cowplot::plot_grid(sai.pm, qst.pm,
+  nrow = 1,
+  scale = c(.97, .97),
+  label_size = 20
+)
+
+final_plot <- cowplot::plot_grid(pred.final, mylegend,
+  nrow = 2,
+  rel_heights = c(.9, .1)
+)
+final_plot
+
+
+```
+
+The analysis reveals the relationships between predictor variables, namely SAI.Score and Question Time, and the outcome variable, potentially representing the probability or log-odds of a correct response. 
+
+For SAI.Score, the left plot illustrates a nuanced pattern: initially, the predicted outcome rises slightly with increasing SAI.Score, yet beyond a certain threshold, it declines. This suggests a non-linear association or an optimal range for SAI.Score, where higher values may not necessarily lead to better outcomes. 
+
+Conversely, the right plot depicts Question Time's impact, showing a positive, sigmoidal relationship with the predicted outcome. This suggests that spending more time on a question tends to correlate with a higher probability or log-odds of a correct response, albeit with diminishing returns at longer durations. 
+
+These visualizations provide insights into how SAI.Score and Question Time influence the outcome variable according to the final model's estimates.
+
+
+# Final Conclusions:
+
+The findings indicate that: 
+  
+  1) W questions lead to higher arousal compared to V questions. 
+  
+  2) Pre-exam anxiety and time spent solving a question are crucial factors for exam performance, where lower anxiety and longer solving times are linked to better chances of giving correct answers.
+  
+Thus, presenting math exams in humorous video format (i.e., using V instead of W questions) would reduce stress without compromising performance
+
